@@ -27,10 +27,37 @@ PERFORMANCE_WEIGHT = {
 NO_COMMISSION_KEYWORDS = ["无提成", "提成0%", "#N/A", "提成100元/台", "提成88元/台", "提成100元每台", "提成88元每台"]
 
 
+# ===================== 工具函数：智能读取带标题行的Sheet =====================
+def smart_read_excel(file, sheet_name, required_keywords):
+    """
+    自动跳过前面的标题行，找到真实表头
+    required_keywords: 必须包含的列名关键词，用于定位表头行
+    """
+    # 先读取全部内容，不设表头
+    df_raw = pd.read_excel(file, sheet_name=sheet_name, header=None)
+    
+    # 逐行查找包含关键词的行，作为表头
+    header_row = 0
+    for i in range(min(10, len(df_raw))):  # 最多检查前10行
+        row_text = " ".join([str(x) for x in df_raw.iloc[i].values if pd.notna(x)])
+        match_count = sum([1 for kw in required_keywords if kw in row_text])
+        if match_count >= len(required_keywords) * 0.6:  # 匹配60%以上关键词即判定为表头行
+            header_row = i
+            break
+    
+    # 从表头行开始读取
+    df = pd.read_excel(file, sheet_name=sheet_name, header=header_row)
+    # 去除列名前后空格
+    df.columns = [str(col).strip() for col in df.columns]
+    # 去除全空列
+    df = df.dropna(axis=1, how="all")
+    return df
+
+
 # ===================== 单订单计算 =====================
 def calc_final_base(row):
     """计算单条销售明细的最终提成基数"""
-    product_type = str(row.get("产品类型", ""))
+    product_type = str(row.get("产品类型", "")).strip()
     discount = float(row["成交折扣"]) if pd.notna(row.get("成交折扣")) else 0
     actual_perf = float(row["实际计提绩效"]) if pd.notna(row.get("实际计提绩效")) else 0
     remark = str(row["备注"]) if pd.notna(row.get("备注")) else ""
@@ -87,25 +114,66 @@ def run_calculation(business_file, config_file,
     执行完整计算
     返回：(结果DataFrame, 门店汇总DataFrame, 销售明细带计算结果DataFrame)
     """
-    # 1. 读取数据
-    df_store = pd.read_excel(business_file, sheet_name=store_sheet)
-    df_sales = pd.read_excel(business_file, sheet_name=sales_sheet)
+    # 1. 智能读取数据（自动跳过标题行）
+    df_store = smart_read_excel(
+        business_file, store_sheet,
+        required_keywords=["区域", "店名", "任务额", "计提绩效"]
+    )
+    df_sales = smart_read_excel(
+        business_file, sales_sheet,
+        required_keywords=["门店代码", "产品类型", "成交金额", "实际计提绩效"]
+    )
     df_staff = pd.read_excel(config_file)
+    df_staff.columns = [str(col).strip() for col in df_staff.columns]
+
+    # 列名兼容映射（自动匹配不同叫法的列）
+    store_col_map = {
+        "部门": "部门",
+        "部门代码": "部门",
+        "门店代码": "部门",
+        "门店类别": "门店类别",
+        "任务额": "任务额",
+        "计提绩效": "计提绩效"
+    }
+    sales_col_map = {
+        "门店代码": "门店代码",
+        "产品类型": "产品类型",
+        "成交折扣": "成交折扣",
+        "实际计提绩效": "实际计提绩效",
+        "零售总价": "零售总价",
+        "成交金额": "成交金额",
+        "备注": "备注"
+    }
+
+    # 重命名列，统一字段名
+    df_store = df_store.rename(columns={k: v for k, v in store_col_map.items() if k in df_store.columns})
+    df_sales = df_sales.rename(columns={k: v for k, v in sales_col_map.items() if k in df_sales.columns})
 
     # 列名校验
     required_store_cols = ["部门", "门店类别", "任务额", "计提绩效"]
     required_sales_cols = ["门店代码", "产品类型", "成交折扣", "实际计提绩效", "零售总价", "成交金额", "备注"]
     required_staff_cols = ["姓名", "部门名称", "部门代码", "职位", "是否有提成资格", "绩效设定", "行为绩效", "库存机奖励", "异常补差", "转介绍"]
 
-    for col in required_store_cols:
-        if col not in df_store.columns:
-            raise ValueError(f"门店完成情况表缺少必填列：{col}")
-    for col in required_sales_cols:
-        if col not in df_sales.columns:
-            raise ValueError(f"销售明细表缺少必填列：{col}")
-    for col in required_staff_cols:
-        if col not in df_staff.columns:
-            raise ValueError(f"人员配置表缺少必填列：{col}")
+    missing_store = [col for col in required_store_cols if col not in df_store.columns]
+    missing_sales = [col for col in required_sales_cols if col not in df_sales.columns]
+    missing_staff = [col for col in required_staff_cols if col not in df_staff.columns]
+
+    if missing_store:
+        raise ValueError(f"门店完成情况表缺少必填列：{', '.join(missing_store)}。当前识别到的列：{', '.join(df_store.columns)}")
+    if missing_sales:
+        raise ValueError(f"销售明细表缺少必填列：{', '.join(missing_sales)}。当前识别到的列：{', '.join(df_sales.columns)}")
+    if missing_staff:
+        raise ValueError(f"人员配置表缺少必填列：{', '.join(missing_staff)}。当前识别到的列：{', '.join(df_staff.columns)}")
+
+    # 清洗数据：去除空行
+    df_store = df_store.dropna(subset=["部门"])
+    df_sales = df_sales.dropna(subset=["门店代码"])
+
+    # 数值列转数字
+    for col in ["任务额", "计提绩效"]:
+        df_store[col] = pd.to_numeric(df_store[col], errors="coerce").fillna(0)
+    for col in ["成交折扣", "实际计提绩效", "零售总价", "成交金额"]:
+        df_sales[col] = pd.to_numeric(df_sales[col], errors="coerce").fillna(0)
 
     # 2. 计算销售明细最终提成基数
     df_sales["最终提成基数"] = df_sales.apply(calc_final_base, axis=1)
@@ -124,8 +192,8 @@ def run_calculation(business_file, config_file,
     # 5. 逐人计算
     result_rows = []
     for _, staff in df_staff.iterrows():
-        store_code = staff["部门代码"]
-        position = staff["职位"]
+        store_code = str(staff["部门代码"]).strip()
+        position = str(staff["职位"]).strip()
         has_commission = str(staff["是否有提成资格"]).strip() == "是"
 
         # 门店汇总数据
