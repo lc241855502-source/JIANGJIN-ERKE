@@ -46,13 +46,13 @@ if st.button("开始计算", type="primary", disabled=not can_run):
                     sales_sheet="26.05销售明细"
                 )
             st.success("计算完成")
-            
+
             # 统计卡片
             t1, t2, t3 = st.columns(3)
             t1.metric("核算总人数", len(df_res))
             t2.metric("绩效合计", f"¥{df_res['绩效小计'].sum():,.2f}")
             t3.metric("提成合计", f"¥{df_res['提成总计'].sum():,.2f}")
-            
+
             st.dataframe(df_res, hide_index=True, use_container_width=True)
 
             # 导出Excel
@@ -61,7 +61,7 @@ if st.button("开始计算", type="primary", disabled=not can_run):
                 df_res.to_excel(writer, index=False, sheet_name="人员提成结果")
                 df_store_sum.to_excel(writer, index=False, sheet_name="门店基数汇总")
                 df_sales_detail.to_excel(writer, index=False, sheet_name="销售明细(含Z列)")
-                
+
                 # 备注非空的姓名标蓝
                 wb = writer.book
                 ws = wb["人员提成结果"]
@@ -73,7 +73,7 @@ if st.button("开始计算", type="primary", disabled=not can_run):
                         remark_idx = idx + 1
                         break
                 if remark_idx:
-                    for row_num in range(2, len(df_res)+2):
+                    for row_num in range(2, len(df_res) + 2):
                         remark_cell = ws.cell(row=row_num, column=remark_idx)
                         if remark_cell.value and str(remark_cell.value).strip():
                             ws.cell(row=row_num, column=1).font = blue_font
