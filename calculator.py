@@ -120,9 +120,8 @@ def calc_person_performance(staff_row, store_info):
 # ===================== 主计算流程 =====================
 def run_calculation(business_file, config_file,
                     store_sheet="26.05完成情况",
-                    sales_sheet="26.05销售明细",
-                    ls_sheet="备用金"):
-    # 1. 智能读取所有Sheet
+                    sales_sheet="26.05销售明细"):
+    # 1. 智能读取核心业务Sheet
     df_store = smart_read_excel(
         business_file, store_sheet,
         required_keywords=["区域", "店名", "任务额", "计提绩效"]
@@ -134,18 +133,28 @@ def run_calculation(business_file, config_file,
     df_staff = pd.read_excel(config_file)
     df_staff.columns = [str(col).strip() for col in df_staff.columns]
 
-    # 2. 读取备用金Sheet，汇总门店LS费用
+    # 2. 自动识别备用金Sheet（模糊匹配包含“备用金”的Sheet名）
+    ls_summary = {}
     try:
-        df_ls = smart_read_excel(
-            business_file, ls_sheet,
-            required_keywords=["门店代码", "费用类型", "金额"]
-        )
-        # 筛选LS类型费用，按门店汇总（整行包含LS关键字即判定）
-        ls_mask = df_ls.apply(lambda x: "LS" in str(x.to_list()), axis=1)
-        ls_summary = df_ls[ls_mask].groupby("门店代码")["金额"].sum().to_dict()
+        xls = pd.ExcelFile(business_file)
+        all_sheets = xls.sheet_names
+        ls_sheet_name = None
+        for sheet in all_sheets:
+            if "备用金" in sheet:
+                ls_sheet_name = sheet
+                break
+        
+        if ls_sheet_name:
+            df_ls = smart_read_excel(
+                business_file, ls_sheet_name,
+                required_keywords=["门店代码", "费用类型", "金额"]
+            )
+            # 筛选LS类型费用，按门店汇总
+            ls_mask = df_ls.apply(lambda x: "LS" in str(x.to_list()), axis=1)
+            ls_summary = df_ls[ls_mask].groupby("门店代码")["金额"].sum().to_dict()
     except Exception:
-        # 若无备用金Sheet，默认LS为0
-        ls_summary = {}
+        # 读取失败或无备用金Sheet时，默认LS为0，不中断计算
+        pass
 
     # 3. 列名兼容映射
     store_col_map = {

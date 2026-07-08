@@ -20,7 +20,7 @@ with col1:
     business_file = st.file_uploader(
         "① 业务数据文件",
         type=["xlsx"],
-        help="包含「26.05完成情况」「26.05销售明细」「备用金」三个Sheet"
+        help="包含完成情况、销售明细、备用金三个Sheet，备用金Sheet名带“备用金”即可自动识别"
     )
 
 with col2:
@@ -55,8 +55,7 @@ if st.button("🚀 开始计算", type="primary", use_container_width=True, disa
                 business_file,
                 config_file,
                 store_sheet="26.05完成情况",
-                sales_sheet="26.05销售明细",
-                ls_sheet="备用金"
+                sales_sheet="26.05销售明细"
             )
 
         st.success("✅ 计算完成！")
@@ -84,8 +83,8 @@ if st.button("🚀 开始计算", type="primary", use_container_width=True, disa
             worksheet = writer.sheets["人员提成结果"]
             blue_font = Font(color="0000FF", bold=True)
 
-            for row_idx in range(2, len(df_result) + 2):  # 第1行表头，从第2行开始
-                remark_cell = worksheet.cell(row=row_idx, column=6)  # 第6列是备注
+            for row_idx in range(2, len(df_result) + 2):
+                remark_cell = worksheet.cell(row=row_idx, column=6)
                 if remark_cell.value and str(remark_cell.value).strip():
                     name_cell = worksheet.cell(row=row_idx, column=1)
                     name_cell.font = blue_font
@@ -107,7 +106,7 @@ if st.button("🚀 开始计算", type="primary", use_container_width=True, disa
 st.divider()
 with st.expander("使用说明"):
     st.markdown("""
-    1. 业务数据文件必须包含三个Sheet：`26.05完成情况`、`26.05销售明细`、`备用金`
+    1. 业务数据文件需包含：完成情况表、销售明细表、备用金表（Sheet名带“备用金”即可自动识别）
     2. 人员配置表按模板填写，部门代码必须与业务数据中的门店代码一致
     3. 产品类型自动根据品牌匹配，无需手动填写
     4. 输出结果对应原表列：姓名(A)、部门名称(C)、绩效小计(Z)、提成总计(AD)、调差总计(AE)
