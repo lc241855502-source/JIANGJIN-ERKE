@@ -20,7 +20,7 @@ with col1:
     business_file = st.file_uploader(
         "① 业务数据文件",
         type=["xlsx"],
-        help="包含完成情况、销售明细、备用金三个Sheet，备用金Sheet名带“备用金”即可自动识别"
+        help="包含完成情况、销售明细、备用金Sheet，支持多个备用金Sheet，自动识别合并"
     )
 
 with col2:
@@ -71,7 +71,7 @@ if st.button("🚀 开始计算", type="primary", use_container_width=True, disa
         st.subheader("人员薪酬明细表")
         st.dataframe(df_result, use_container_width=True, hide_index=True)
 
-        # ========== 下载结果（修复姓名标蓝逻辑） ==========
+        # ========== 下载结果（姓名标蓝） ==========
         output_buffer = BytesIO()
         with pd.ExcelWriter(output_buffer, engine="openpyxl") as writer:
             df_result.to_excel(writer, index=False, sheet_name="人员提成结果")
@@ -88,14 +88,14 @@ if st.button("🚀 开始计算", type="primary", use_container_width=True, disa
             remark_col_idx = None
             for idx, h in enumerate(headers):
                 if h == "备注":
-                    remark_col_idx = idx + 1  # openpyxl列从1开始
+                    remark_col_idx = idx + 1
                     break
 
             if remark_col_idx:
                 for row_idx in range(2, len(df_result) + 2):
                     remark_cell = worksheet.cell(row=row_idx, column=remark_col_idx)
                     if remark_cell.value and str(remark_cell.value).strip():
-                        name_cell = worksheet.cell(row=row_idx, column=1)  # 第1列永远是姓名
+                        name_cell = worksheet.cell(row=row_idx, column=1)
                         name_cell.font = blue_font
 
         st.divider()
@@ -115,10 +115,10 @@ if st.button("🚀 开始计算", type="primary", use_container_width=True, disa
 st.divider()
 with st.expander("使用说明"):
     st.markdown("""
-    1. 业务数据文件需包含：完成情况表、销售明细表、备用金表（Sheet名带“备用金”即可自动识别）
+    1. 业务数据文件支持**多个备用金Sheet**，自动识别所有带「备用金」的Sheet，合并统计LS费用
     2. 人员配置表按模板填写，部门代码必须与业务数据中的门店代码一致
     3. 产品类型自动根据品牌匹配，无需手动填写
-    4. 行为绩效支持百分制（100）和百分比小数（1.0）两种格式，自动识别
+    4. 行为绩效支持百分制（100）和百分比小数（1.03）两种格式，自动识别
     5. 输出结果对应原表列：姓名(A)、部门名称(C)、绩效小计(Z)、提成总计(AD)、调差总计(AE)
     6. 有特殊备注的人员，导出Excel中姓名会自动标蓝，方便核对
     """)

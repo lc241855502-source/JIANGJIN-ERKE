@@ -39,7 +39,7 @@ PERFORMANCE_WEIGHT = {
 # 订单无提成关键词
 NO_COMMISSION_KEYWORDS = ["无提成", "提成0%", "#N/A", "提成100元/台", "提成88元/台", "提成100元每台", "提成88元每台"]
 # 人员无提成/清零关键词
-STAFF_NO_COMMISSION_KEYWORDS = ["无提成", "病假", "产假", "离职", "缺勤整月", "无绩效", "全月缺勤", "整月病假"]
+STAFF_NO_COMMISSION_KEYWORDS = ["无提成", "病假", "产假", "离职", "缺勤整月", "无绩效", "全月缺勤", "整月病假", "当月无提成", "停薪"]
 
 
 # ===================== 工具函数：智能读取带标题行的Sheet =====================
@@ -109,8 +109,8 @@ def calc_person_performance(staff_row, store_info):
     perf_base = float(staff_row["绩效设定"])  # W列：绩效基数
     behavior_raw = float(staff_row["行为绩效"])
 
-    # 自动识别行为绩效格式：>1 按百分制，≤1 按百分比小数
-    if behavior_raw > 1:
+    # 自动识别行为绩效格式：>2 按百分制整数，≤2 按百分比小数（兼容1.03=103%）
+    if behavior_raw > 2:
         behavior_score = behavior_raw / 100
     else:
         behavior_score = behavior_raw
@@ -149,31 +149,33 @@ def run_calculation(business_file, config_file,
     df_staff = pd.read_excel(config_file)
     df_staff.columns = [str(col).strip() for col in df_staff.columns]
 
-    # 2. 自动识别备用金Sheet，精准读取LS费用
+    # 2. 扫描所有备用金Sheet，合并统计LS费用（核心修复：支持多个备用金Sheet）
     ls_summary = {}
     try:
         xls = pd.ExcelFile(business_file)
         all_sheets = xls.sheet_names
-        ls_sheet_name = None
-        for sheet in all_sheets:
-            if "备用金" in sheet:
-                ls_sheet_name = sheet
-                break
+        # 筛选所有包含「备用金」的Sheet
+        ls_sheet_list = [sheet for sheet in all_sheets if "备用金" in sheet]
         
-        if ls_sheet_name:
+        for ls_sheet_name in ls_sheet_list:
             df_ls = smart_read_excel(
                 business_file, ls_sheet_name,
                 required_keywords=["门店", "费用类型", "金额"]
             )
-            # 精准匹配：只在费用类型列中查找包含LS的项
-            type_col = find_col(df_ls, ["费用类型", "项目", "类型", "费用项目"])
-            store_col = find_col(df_ls, ["门店代码", "门店", "部门代码", "部门"])
-            amount_col = find_col(df_ls, ["金额", "费用金额", "发生额"])
+            # 模糊匹配列
+            type_col = find_col(df_ls, ["费用类型", "项目", "类型", "费用项目", "费用名称"])
+            store_col = find_col(df_ls, ["门店代码", "门店", "部门代码", "部门", "门店名称"])
+            amount_col = find_col(df_ls, ["金额", "费用金额", "发生额", "支出金额", "合计"])
 
             if type_col and store_col and amount_col:
-                ls_mask = df_ls[type_col].astype(str).str.contains("LS", na=False)
-                ls_summary = df_ls[ls_mask].groupby(store_col)[amount_col].sum().to_dict()
+                # 不区分大小写匹配LS
+                ls_mask = df_ls[type_col].astype(str).str.contains("LS", case=False, na=False)
+                # 按门店汇总，累加到总字典
+                sheet_ls = df_ls[ls_mask].groupby(store_col)[amount_col].sum().to_dict()
+                for store, amount in sheet_ls.items():
+                    ls_summary[store] = ls_summary.get(store, 0.0) + float(amount)
     except Exception:
+        # 读取失败不中断计算，默认LS为0
         pass
 
     # 3. 列名兼容映射
@@ -195,7 +197,7 @@ def run_calculation(business_file, config_file,
         df_sales["产品类型"] = ""
 
     # 兼容：人员备注列模糊匹配
-    staff_remark_col = find_col(df_staff, ["备注", "说明", "备注说明", "人员备注"])
+    staff_remark_col = find_col(df_staff, ["备注", "说明", "备注说明", "人员备注", "特殊说明", "备注信息"])
     if not staff_remark_col:
         df_staff["备注"] = ""
         staff_remark_col = "备注"
@@ -281,7 +283,7 @@ def run_calculation(business_file, config_file,
             ha_base = 0.0
             ven_base = 0.0
 
-        # 扣除门店LS费用
+        # 扣除门店LS费用（所有备用金Sheet的合计值）
         store_ls = float(ls_summary.get(store_code, 0.0))
         ha_base_after_ls = round(max(0.0, ha_base - store_ls), 2)
 
