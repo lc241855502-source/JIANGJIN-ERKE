@@ -62,44 +62,50 @@ def calc_z_row(row):
     brand = str(row.get("品牌","")).strip()
     discount = float(row.get("成交折扣",0)) if pd.notna(row.get("成交折扣")) else 0
     u = float(row.get("实际计提绩效",0)) if pd.notna(row.get("实际计提绩效")) else 0
-    w = float(row.get("零售总价",0)) if pd.notna(row.get("零售总价")) else 0
-    n = float(row.get("成交金额",0)) if pd.notna(row.get("成交金额")) else 0
-    o = float(row.get("零售总价",0)) if pd.notna(row.get("零售总价")) else 0
-    aa = float(row.get("LS分摊比例",0)) if pd.notna(row.get("LS分摊比例")) else 0
+    retail_total = float(row.get("零售总价",0)) if pd.notna(row.get("零售总价")) else 0
+    deal_amt = float(row.get("成交金额",0)) if pd.notna(row.get("成交金额")) else 0
+    ls_ratio = float(row.get("LS分摊比例",0)) if pd.notna(row.get("LS分摊比例")) else 0
     remark = str(row.get("备注","")).strip()
 
+    y = 0.0
+    z = 0.0
     if ptype == "呼吸机":
         if discount < 0.7:
-            y = 0
+            y = 0.0
         else:
-            y = round(n - o*0.7, 2)
+            y = round(deal_amt - retail_total * 0.7, 2)
     else:
-        y = 0
         if any(k in remark for k in NO_COMMISSION_ORDER):
-            y = 0
-        elif "斯达克" in brand and "斯达克全品类1.2倍提成" in remark:
+            y = 0.0
+        elif "斯达克全品类1.2倍提成" in remark:
             y = round(u * 1.2, 2)
         elif "即墨医院订单" in remark:
-            ratio = (w*0.95)/n if n !=0 else 0
+            if deal_amt == 0:
+                ratio = 0
+            else:
+                ratio = (retail_total * 0.95) / deal_amt
             if ratio >= 0.5:
-                y = round(w,2)
-            elif ratio >=0.4:
-                y = round(w*0.5,2)
+                y = round(retail_total, 2)
+            elif ratio >= 0.4:
+                y = round(retail_total * 0.5, 2)
             else:
-                y=0
+                y = 0.0
         elif "武汉中南订单" in remark or "武汉人民订单" in remark:
-            ratio = w/n if n !=0 else 0
-            if ratio >=0.5:
-                y=round(w,2)
-            elif ratio >=0.4:
-                y=round(w*0.5,2)
+            if deal_amt == 0:
+                ratio = 0
             else:
-                y=0
+                ratio = retail_total / deal_amt
+            if ratio >= 0.5:
+                y = round(retail_total, 2)
+            elif ratio >= 0.4:
+                y = round(retail_total * 0.5, 2)
+            else:
+                y = 0.0
         elif "转门店" in remark:
-            y = round(u * (1 - aa),2)
+            y = round(u * (1 - ls_ratio), 2)
         else:
-            y = round(u,2)
-    # 计算Z
+            y = round(u, 2)
+    # Z计算
     if 0.4 < discount < 0.5:
         z = round(y / 2, 2)
     else:
@@ -108,7 +114,7 @@ def calc_z_row(row):
 
 def calc_staff_perf(staff_data, store_data):
     completion = store_data.get("绩效完成率",0.0)
-    level = store_data.get("门店类别","C+类")
+    level = store_data.get("C+类")
     pos = str(staff_data["职位"]).strip()
     base_perf = float(staff_data["绩效设定"])
     beh_raw = float(staff_data["行为绩效"])
@@ -151,7 +157,7 @@ def run_calculation(business_file, config_file, store_sheet="26.05完成情况",
                 group = df_ls.groupby(col_store)[col_amt].sum().to_dict()
                 for k,v in group.items():
                     ls_dict[k] = ls_dict.get(k,0) + v
-    except:
+    except Exception:
         pass
 
     # 列兼容映射
@@ -187,9 +193,9 @@ def run_calculation(business_file, config_file, store_sheet="26.05完成情况",
     for c in ["成交折扣","实际计提绩效","零售总价","成交金额"]:
         df_sales[c] = pd.to_numeric(df_sales[c], errors="coerce").fillna(0)
 
-    # 修复：r["brand"] → r["品牌"]
+    # 填充产品类型
     df_sales["产品类型"] = df_sales.apply(lambda r: get_product_type(r["品牌"]) if str(r["产品类型"]).strip() not in ["助听器","呼吸机"] else r["产品类型"], axis=1)
-    # 逐行计算Y、Z
+    # 逐行计算Y Z
     z_list = []
     y_list = []
     for _, row in df_sales.iterrows():
@@ -199,14 +205,14 @@ def run_calculation(business_file, config_file, store_sheet="26.05完成情况",
     df_sales["Y计提基数"] = y_list
     df_sales["最终提成基数Z"] = z_list
 
-    # 门店汇总Z：助听器/呼吸机
+    # 门店汇总
     store_group = df_sales.groupby(["门店代码","产品类型"])["最终提成基数Z"].sum().unstack(fill_value=0)
     for t in ["助听器","呼吸机"]:
         if t not in store_group.columns:
-            store_group[t] = 0
+            store_group[t] = 0.0
     store_group = store_group.round(2)
 
-    # 门店完成率字典
+    # 完成率
     df_store["绩效完成率"] = df_store["计提"] / df_store["任务额"].replace(0, np.nan)
     df_store["绩效完成率"] = df_store["绩效完成率"].fillna(0)
     store_info = df_store.set_index("部门")[["门店类别","绩效完成率"]].to_dict("index")
@@ -237,20 +243,25 @@ def run_calculation(business_file, config_file, store_sheet="26.05完成情况",
         # 门店基数
         ha_total = store_group.loc[dept_code, "助听器"] if dept_code in store_group.index else 0.0
         ven_total = store_group.loc[dept_code, "呼吸机"] if dept_code in store_group.index else 0.0
-        # 扣除LS
+        # LS扣除
         dept_ls = ls_dict.get(dept_code, 0.0)
-        ha_after_ls = round(max(0, ha_total - dept_ls), 2)
-        # 提成计算
+        ha_after_ls = round(max(0.0, ha_total - dept_ls), 2)
+        # 提成计算 全部强制浮点数防止None
         ha_comm = 0.0
         ven_comm = 0.0
         if has_comm and pos in HEARING_AID_RATE:
-            ha_comm = round(ha_after_ls * HEARING_AID_RATE[pos], 2)
-            ven_comm = round(ven_total * VENTILATOR_RATE[pos], 2)
+            ha_comm = round(float(ha_after_ls) * HEARING_AID_RATE[pos], 2)
+            ven_comm = round(float(ven_total) * VENTILATOR_RATE[pos], 2)
         base_total = round(ha_comm + ven_comm, 2)
-        adjust = round(float(s["库存机奖励"]) + float(s["异常补差"]) + float(s["转介绍"]) + float(s["个人提成调整"]), 2)
+        adjust = round(
+            float(s.get("库存机奖励", 0)) +
+            float(s.get("异常补差", 0)) +
+            float(s.get("转介绍", 0)) +
+            float(s.get("个人提成调整", 0)), 2
+        )
         total_comm = round(base_total + adjust, 2)
         # 绩效
-        perf_sum = calc_staff_perf(s, store_info.get(dept_code, {"门店类别":"C+类","绩效完成率":0}))
+        perf_sum = calc_staff_perf(s, store_info.get(dept_code, {"门店类别":"C+类","绩效完成率":0.0}))
         res_rows.append({
             "姓名":s["姓名"],
             "部门名称":s["部门名称"],
