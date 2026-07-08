@@ -235,7 +235,10 @@ def run_calculation(business_file, config_file, store_sheet="26.05完成情况",
     )
 
     # ========== 核心：优先用原表已有的计提提成基数，100%对齐原表逻辑（包含AB分成） ==========
-    if "计提提成基数" in df_sales.columns:
+    if "实际计提绩效" in df_sales.columns:
+        df_sales["最终提成基数Z"] = pd.to_numeric(df_sales["实际计提绩效"], errors="coerce").fillna(0.0)
+        df_sales["Y计提基数"] = df_sales["最终提成基数Z"]
+    elif "计提提成基数" in df_sales.columns:
         df_sales["最终提成基数Z"] = pd.to_numeric(df_sales["计提提成基数"], errors="coerce").fillna(0.0)
         df_sales["Y计提基数"] = df_sales["最终提成基数Z"]
     else:
