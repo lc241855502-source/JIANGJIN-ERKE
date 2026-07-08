@@ -36,7 +36,6 @@ def smart_read_excel(file, sheet_name, required_keywords):
     df_raw = pd.read_excel(file, sheet_name=sheet_name, header=None)
     header_row = 0
     max_hit = 0
-    # 扫描前15行找关键词匹配最多的行作为表头
     for i in range(min(15, len(df_raw))):
         row_text = " ".join([str(x) for x in df_raw.iloc[i].values if pd.notna(x)])
         hit = sum([1 for k in required_keywords if k in row_text])
@@ -68,21 +67,17 @@ def get_product_type(brand):
 
 
 def calc_z_row(row):
-    """订单计提基数计算：彻底移除w变量，全字段空值兜底"""
+    """订单计提基数兜底计算：优先用原表已有列，此函数仅作备用"""
     ptype = str(row.get("产品类型", "")).strip()
-    brand = str(row.get("品牌", "")).strip()
     discount = float(row.get("成交折扣", 0.0)) if pd.notna(row.get("成交折扣")) else 0.0
     u = float(row.get("实际计提绩效", 0.0)) if pd.notna(row.get("实际计提绩效")) else 0.0
     retail_total = float(row.get("零售总价", 0.0)) if pd.notna(row.get("零售总价")) else 0.0
     deal_amt = float(row.get("成交金额", 0.0)) if pd.notna(row.get("成交金额")) else 0.0
-
-    # 兼容两种LS列名
     ls_val = 0.0
     if pd.notna(row.get("LS分摊比例")):
         ls_val = float(row.get("LS分摊比例", 0.0))
     elif pd.notna(row.get("LS")):
         ls_val = float(row.get("LS", 0.0))
-
     remark = str(row.get("备注", "")).strip() if pd.notna(row.get("备注")) else ""
 
     y = 0.0
@@ -125,7 +120,6 @@ def calc_z_row(row):
         else:
             y = round(u, 2)
 
-    # 折扣区间折减Z值
     if 0.4 < discount < 0.5:
         z = round(y / 2, 2)
     else:
@@ -176,9 +170,7 @@ def run_calculation(business_file, config_file, store_sheet="26.05完成情况",
         ls_sheets = [s for s in all_sheets if "备用金" in s]
         for sh in ls_sheets:
             df_ls = smart_read_excel(business_file, sh, ["LS", "申请数字", "费用"])
-            # 自动匹配门店代码列（兼容繁体表头）
             col_store = find_col(df_ls, ["门店代码", "會員編號", "部门代码", "门店"])
-            # 自动匹配LS费用列
             col_amt = find_col(df_ls, ["LS费用", "申请数字", "金额", "费用金额"])
             if col_store and col_amt:
                 df_ls[col_amt] = pd.to_numeric(df_ls[col_amt], errors="coerce").fillna(0.0)
@@ -201,7 +193,8 @@ def run_calculation(business_file, config_file, store_sheet="26.05完成情况",
     for old, new in {"门店代码": "门店代码", "品牌": "品牌", "产品类型": "产品类型",
                      "成交折扣": "成交折扣", "实际计提绩效": "实际计提绩效",
                      "零售总价": "零售总价", "成交金额": "成交金额",
-                     "备注": "备注", "LS分摊比例": "LS分摊比例", "LS": "LS"}.items():
+                     "备注": "备注", "LS分摊比例": "LS分摊比例", "LS": "LS",
+                     "计提提成基数": "计提提成基数", "分配金额": "分配金额"}.items():
         if old in df_sales.columns:
             sales_rename[old] = new
     df_sales.rename(columns=sales_rename, inplace=True)
@@ -241,14 +234,19 @@ def run_calculation(business_file, config_file, store_sheet="26.05完成情况",
         axis=1
     )
 
-    # 逐行计算Y、Z
-    z_list, y_list = [], []
-    for _, row in df_sales.iterrows():
-        z, y = calc_z_row(row)
-        z_list.append(z)
-        y_list.append(y)
-    df_sales["Y计提基数"] = y_list
-    df_sales["最终提成基数Z"] = z_list
+    # ========== 核心：优先用原表已有的计提提成基数，100%对齐原表逻辑（包含AB分成） ==========
+    if "计提提成基数" in df_sales.columns:
+        df_sales["最终提成基数Z"] = pd.to_numeric(df_sales["计提提成基数"], errors="coerce").fillna(0.0)
+        df_sales["Y计提基数"] = df_sales["最终提成基数Z"]
+    else:
+        # 兜底：自动计算
+        z_list, y_list = [], []
+        for _, row in df_sales.iterrows():
+            z, y = calc_z_row(row)
+            z_list.append(z)
+            y_list.append(y)
+        df_sales["Y计提基数"] = y_list
+        df_sales["最终提成基数Z"] = z_list
 
     # 门店按产品类型汇总Z
     store_group = df_sales.groupby(["门店代码", "产品类型"])["最终提成基数Z"].sum().unstack(fill_value=0.0)
@@ -262,8 +260,8 @@ def run_calculation(business_file, config_file, store_sheet="26.05完成情况",
     df_store["绩效完成率"] = df_store["绩效完成率"].fillna(0.0)
     store_info = df_store.set_index("部门")[["门店类别", "绩效完成率"]].to_dict("index")
 
-    # 人员备注列匹配
-    staff_remark_col = find_col(df_staff, ["备注", "说明", "人员备注"])
+    # 人员备注列匹配：扩大匹配范围，支持特殊情况、说明等列名
+    staff_remark_col = find_col(df_staff, ["备注", "特殊情况", "人员备注", "说明", "备注说明"])
     if not staff_remark_col:
         df_staff["备注"] = ""
         staff_remark_col = "备注"
