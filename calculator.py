@@ -1,8 +1,7 @@
 import pandas as pd
 import numpy as np
 
-# ===================== 常量配置 =====================
-# 品牌-产品类型映射（对应导出计数_品牌表）
+# 品牌映射 对应导出计数_品牌
 BRAND_PRODUCT_MAP = {
     "奥迪康": "助听器",
     "峰力": "助听器",
@@ -14,322 +13,259 @@ BRAND_PRODUCT_MAP = {
 }
 
 # 提成系数
-HEARING_AID_RATE = {
-    "店长": 0.05,
-    "大店长": 0.05,
-    "店长（双店）": 0.05,
-    "店员": 0.02
-}
-VENTILATOR_RATE = {
-    "店长": 0.20,
-    "大店长": 0.20,
-    "店长（双店）": 0.20,
-    "店员": 0.08
-}
+HEARING_AID_RATE = {"店长":0.05, "大店长":0.05, "店长（双店）":0.05, "店员":0.02}
+VENTILATOR_RATE = {"店长":0.20, "大店长":0.20, "店长（双店）":0.20, "店员":0.08}
 
-# 绩效权重配置：{门店等级: {职位: (业绩权重, 行为权重)}}
+# 绩效权重
 PERFORMANCE_WEIGHT = {
-    "A类": {"店长": (0.6, 0.4), "店员": (0.4, 0.6)},
-    "B类": {"店长": (0.6, 0.4), "店员": (0.4, 0.6)},
-    "C类": {"店长": (0.6, 0.4), "店员": (0.4, 0.6)},
-    "C+类": {"店长": (0.6, 0.4), "店员": (0.4, 0.6)},
-    "D类": {"店长": (0.7, 0.3), "店员": (0.3, 0.7)}
+    "A类":{"店长":(0.6,0.4),"店员":(0.4,0.6)},
+    "B类":{"店长":(0.6,0.4),"店员":(0.4,0.6)},
+    "C类":{"店长":(0.6,0.4),"店员":(0.4,0.6)},
+    "C+类":{"店长":(0.6,0.4),"店员":(0.4,0.6)},
+    "D类":{"店长":(0.7,0.3),"店员":(0.3,0.7)}
 }
 
-# 订单无提成关键词
-NO_COMMISSION_KEYWORDS = ["无提成", "提成0%", "#N/A", "提成100元/台", "提成88元/台", "提成100元每台", "提成88元每台"]
-# 人员无提成/清零关键词
-STAFF_NO_COMMISSION_KEYWORDS = ["无提成", "病假", "产假", "离职", "缺勤整月", "无绩效", "全月缺勤", "整月病假", "当月无提成", "停薪"]
+# 关键词定义
+NO_COMMISSION_ORDER = ["无提成","提成0%","#N/A","提成100元/台","提成88元/台","提成100元每台","提成88元每台"]
+STAFF_CLEAR_KEY = ["无提成","病假","产假","离职","缺勤整月","无绩效","全月缺勤","整月病假"]
 
-
-# ===================== 工具函数：智能读取带标题行的Sheet =====================
 def smart_read_excel(file, sheet_name, required_keywords):
-    df_raw = pd.read_excel(file, sheet_name=sheet_name, header=None)
+    df_raw = pd.read_excel(file, sheet_name, header=None)
     header_row = 0
     for i in range(min(10, len(df_raw))):
         row_text = " ".join([str(x) for x in df_raw.iloc[i].values if pd.notna(x)])
-        match_count = sum([1 for kw in required_keywords if kw in row_text])
-        if match_count >= len(required_keywords) * 0.6:
+        hit = sum([1 for k in required_keywords if k in row_text])
+        if hit >= len(required_keywords)*0.6:
             header_row = i
             break
-    df = pd.read_excel(file, sheet_name=sheet_name, header=header_row)
-    df.columns = [str(col).strip() for col in df.columns]
+    df = pd.read_excel(file, sheet_name, header=header_row)
+    df.columns = [str(c).strip() for c in df.columns]
     df = df.dropna(axis=1, how="all")
     return df
 
-
-# ===================== 工具函数：模糊匹配列名 =====================
-def find_col(df, keywords):
-    """在DataFrame列中查找包含任一关键词的列名，返回第一个匹配的列名"""
-    for col in df.columns:
-        for kw in keywords:
+def find_col(df, priority_keywords):
+    for kw in priority_keywords:
+        for col in df.columns:
             if kw in col:
                 return col
     return None
 
+def get_product_type(brand):
+    brand = str(brand).strip()
+    for b, t in BRAND_PRODUCT_MAP.items():
+        if b in brand:
+            return t
+    return "助听器"
 
-# ===================== 单订单最终提成基数计算 =====================
-def calc_final_base(row):
-    product_type = str(row.get("产品类型", "")).strip()
-    brand = str(row.get("品牌", "")).strip()
-    discount = float(row["成交折扣"]) if pd.notna(row.get("成交折扣")) else 0
-    actual_perf = float(row["实际计提绩效"]) if pd.notna(row.get("实际计提绩效")) else 0
-    remark = str(row["备注"]) if pd.notna(row.get("备注")) else ""
-    retail_total = float(row["零售总价"]) if pd.notna(row.get("零售总价")) else 0
-    deal_amount = float(row["成交金额"]) if pd.notna(row.get("成交金额")) else 0
+def calc_z_row(row):
+    ptype = str(row.get("产品类型","")).strip()
+    brand = str(row.get("品牌","")).strip()
+    discount = float(row.get("成交折扣",0)) if pd.notna(row.get("成交折扣")) else 0
+    u = float(row.get("实际计提绩效",0)) if pd.notna(row.get("实际计提绩效")) else 0
+    w = float(row.get("零售总价",0)) if pd.notna(row.get("零售总价")) else 0
+    n = float(row.get("成交金额",0)) if pd.notna(row.get("成交金额")) else 0
+    o = float(row.get("零售总价",0)) if pd.notna(row.get("零售总价")) else 0
+    aa = float(row.get("LS分摊比例",0)) if pd.notna(row.get("LS分摊比例")) else 0
+    remark = str(row.get("备注","")).strip()
 
-    # 斯达克助听器1.2倍计提
-    if product_type == "助听器" and "斯达克" in brand:
-        actual_perf = actual_perf * 1.2
-
-    # 呼吸机规则
-    if product_type == "呼吸机":
+    if ptype == "呼吸机":
         if discount < 0.7:
-            return 0.0
-        return round(deal_amount - retail_total * 0.7, 2)
-
-    # 助听器规则
-    elif product_type == "助听器":
-        for kw in NO_COMMISSION_KEYWORDS:
-            if kw in remark:
-                return 0.0
-        if discount >= 0.5:
-            return round(actual_perf, 2)
+            y = 0
         else:
-            return round(actual_perf * 0.5, 2)
-
-    return 0.0
-
-
-# ===================== 单人绩效计算（严格对齐人工计算逻辑） =====================
-def calc_person_performance(staff_row, store_info):
-    store_level = store_info.get("门店类别", "C+类")
-    completion_rate = store_info.get("绩效完成率", 0.0)
-    position = str(staff_row["职位"]).strip()
-    perf_base = float(staff_row["绩效设定"])  # W列：绩效基数
-    behavior_raw = float(staff_row["行为绩效"])
-
-    # 自动识别行为绩效格式：>2 按百分制整数，≤2 按百分比小数（兼容1.03=103%）
-    if behavior_raw > 2:
-        behavior_score = behavior_raw / 100
+            y = round(n - o*0.7, 2)
     else:
-        behavior_score = behavior_raw
-
-    # 1. 计算业绩系数：≥70%生效，封顶100%，保留3位小数（百分比1位精度）
-    if completion_rate >= 0.7:
-        perf_ratio = round(min(completion_rate, 1.0), 3)
+        y = 0
+        if any(k in remark for k in NO_COMMISSION_ORDER):
+            y = 0
+        elif "斯达克" in brand and "斯达克全品类1.2倍提成" in remark:
+            y = round(u * 1.2, 2)
+        elif "即墨医院订单" in remark:
+            ratio = (w*0.95)/n if n !=0 else 0
+            if ratio >= 0.5:
+                y = round(w,2)
+            elif ratio >=0.4:
+                y = round(w*0.5,2)
+            else:
+                y=0
+        elif "武汉中南订单" in remark or "武汉人民订单" in remark:
+            ratio = w/n if n !=0 else 0
+            if ratio >=0.5:
+                y=round(w,2)
+            elif ratio >=0.4:
+                y=round(w*0.5,2)
+            else:
+                y=0
+        elif "转门店" in remark:
+            y = round(u * (1 - aa),2)
+        else:
+            y = round(u,2)
+    # 计算Z
+    if 0.4 < discount < 0.5:
+        z = round(y / 2, 2)
     else:
-        perf_ratio = 0.0
+        z = round(y, 2)
+    return z, y
 
-    # 2. 获取权重
-    level_config = PERFORMANCE_WEIGHT.get(store_level, PERFORMANCE_WEIGHT["C+类"])
-    perf_weight, behavior_weight = level_config.get(position, (0.4, 0.6))
+def calc_staff_perf(staff_data, store_data):
+    completion = store_data.get("绩效完成率",0.0)
+    level = store_data.get("门店类别","C+类")
+    pos = str(staff_data["职位"]).strip()
+    base_perf = float(staff_data["绩效设定"])
+    beh_raw = float(staff_data["行为绩效"])
 
-    # 3. 分步计算X、Y、Z，每步四舍五入，完全对齐Excel
-    x_perf = round(perf_base * perf_weight * perf_ratio, 2)  # X列：业绩绩效
-    y_behavior = round(perf_base * behavior_weight * behavior_score, 2)  # Y列：行为绩效
-    z_total = round(x_perf + y_behavior, 2)  # Z列：绩效小计
+    if beh_raw > 2:
+        beh_score = beh_raw / 100
+    else:
+        beh_score = beh_raw
 
+    if completion >= 0.7:
+        perf_rate = round(min(completion,1.0),3)
+    else:
+        perf_rate = 0.0
+
+    wgt_perf, wgt_beh = PERFORMANCE_WEIGHT.get(level, {"店长":(0.6,0.4),"店员":(0.4,0.6)}).get(pos,(0.4,0.6))
+    x = round(base_perf * wgt_perf * perf_rate, 2)
+    y = round(base_perf * wgt_beh * beh_score, 2)
+    z_total = round(x + y, 2)
     return z_total
 
-
-# ===================== 主计算流程 =====================
-def run_calculation(business_file, config_file,
-                    store_sheet="26.05完成情况",
-                    sales_sheet="26.05销售明细"):
-    # 1. 智能读取核心业务Sheet
-    df_store = smart_read_excel(
-        business_file, store_sheet,
-        required_keywords=["区域", "店名", "任务额", "计提绩效"]
-    )
-    df_sales = smart_read_excel(
-        business_file, sales_sheet,
-        required_keywords=["门店代码", "品牌", "成交金额", "实际计提绩效"]
-    )
+def run_calculation(business_file, config_file, store_sheet="26.05完成情况", sales_sheet="26.05销售明细"):
+    # 读取三大基础表
+    df_store = smart_read_excel(business_file, store_sheet, ["区域","店名","任务额","计提绩效"])
+    df_sales = smart_read_excel(business_file, sales_sheet, ["门店代码","品牌","成交金额","实际计提绩效"])
     df_staff = pd.read_excel(config_file)
-    df_staff.columns = [str(col).strip() for col in df_staff.columns]
+    df_staff.columns = [str(c).strip() for c in df_staff.columns]
 
-    # 2. 扫描所有备用金Sheet，合并统计LS费用（核心修复：支持多个备用金Sheet）
-    ls_summary = {}
+    # 多备用金Sheet 汇总LS
+    ls_dict = {}
     try:
-        xls = pd.ExcelFile(business_file)
-        all_sheets = xls.sheet_names
-        # 筛选所有包含「备用金」的Sheet
-        ls_sheet_list = [sheet for sheet in all_sheets if "备用金" in sheet]
-        
-        for ls_sheet_name in ls_sheet_list:
-            df_ls = smart_read_excel(
-                business_file, ls_sheet_name,
-                required_keywords=["门店", "费用类型", "金额"]
-            )
-            # 模糊匹配列
-            type_col = find_col(df_ls, ["费用类型", "项目", "类型", "费用项目", "费用名称"])
-            store_col = find_col(df_ls, ["门店代码", "门店", "部门代码", "部门", "门店名称"])
-            amount_col = find_col(df_ls, ["金额", "费用金额", "发生额", "支出金额", "合计"])
-
-            if type_col and store_col and amount_col:
-                # 不区分大小写匹配LS
-                ls_mask = df_ls[type_col].astype(str).str.contains("LS", case=False, na=False)
-                # 按门店汇总，累加到总字典
-                sheet_ls = df_ls[ls_mask].groupby(store_col)[amount_col].sum().to_dict()
-                for store, amount in sheet_ls.items():
-                    ls_summary[store] = ls_summary.get(store, 0.0) + float(amount)
-    except Exception:
-        # 读取失败不中断计算，默认LS为0
+        xls_all = pd.ExcelFile(business_file)
+        all_sheets = xls_all.sheet_names
+        ls_sheets = [s for s in all_sheets if "备用金" in s]
+        for sh in ls_sheets:
+            df_ls = smart_read_excel(business_file, sh, ["门店代码","LS费用","金额"])
+            col_store = find_col(df_ls, ["门店代码","部门代码","门店"])
+            col_amt = find_col(df_ls, ["LS费用","金额","费用金额"])
+            if col_store and col_amt:
+                df_ls[col_amt] = pd.to_numeric(df_ls[col_amt], errors="coerce").fillna(0)
+                group = df_ls.groupby(col_store)[col_amt].sum().to_dict()
+                for k,v in group.items():
+                    ls_dict[k] = ls_dict.get(k,0) + v
+    except:
         pass
 
-    # 3. 列名兼容映射
-    store_col_map = {
-        "部门": "部门", "部门代码": "部门", "门店代码": "部门",
-        "门店类别": "门店类别", "任务额": "任务额", "计提绩效": "计提绩效"
-    }
-    sales_col_map = {
-        "门店代码": "门店代码", "品牌": "品牌", "产品类型": "产品类型",
-        "成交折扣": "成交折扣", "实际计提绩效": "实际计提绩效",
-        "零售总价": "零售总价", "成交金额": "成交金额", "备注": "备注"
-    }
-
-    df_store = df_store.rename(columns={k: v for k, v in store_col_map.items() if k in df_store.columns})
-    df_sales = df_sales.rename(columns={k: v for k, v in sales_col_map.items() if k in df_sales.columns})
-
-    # 兼容：产品类型列不存在则自动创建空列，后续靠品牌匹配填充
+    # 列兼容映射
+    store_map = {"部门":"部门","部门代码":"部门","门店代码":"部门","门店类别":"门店类别","任务额":"任务额","计提绩效":"计提"}
+    sales_map = {"门店代码":"门店代码","品牌":"品牌","产品类型":"产品类型","成交折扣":"成交折扣","实际计提绩效":"实际计提绩效","零售总价":"零售总价","成交金额":"成交金额","备注":"备注","LS分摊比例":"LS分摊比例"}
+    df_store.rename(columns={k:v for k,v in store_map.items() if k in df_store.columns}, inplace=True)
+    df_sales.rename(columns={k:v for k,v in sales_map.items() if k in df_sales.columns}, inplace=True)
     if "产品类型" not in df_sales.columns:
         df_sales["产品类型"] = ""
 
-    # 兼容：人员备注列模糊匹配
-    staff_remark_col = find_col(df_staff, ["备注", "说明", "备注说明", "人员备注", "特殊说明", "备注信息"])
+    # 必填校验
+    req_store = ["部门","门店类别","任务额","计提"]
+    req_sales = ["门店代码","品牌","成交折扣","实际计提绩效","零售总价","成交金额","备注"]
+    req_staff = ["姓名","部门名称","部门代码","职位","是否有提成资格","绩效设定","行为绩效","库存机奖励","异常补差","转介绍","个人提成调整"]
+    miss_store = [c for c in req_store if c not in df_store.columns]
+    miss_sales = [c for c in req_sales if c not in df_store.columns]
+    miss_staff = [c for c in req_staff if c not in df_staff.columns]
+    if miss_store:
+        raise ValueError(f"门店表缺失列：{miss_store}")
+    if miss_sales:
+        raise ValueError(f"销售表缺失列：{miss_sales}")
+    if miss_staff:
+        raise ValueError(f"人员配置表缺失列：{miss_staff}")
+
+    # 清洗数值
+    df_store = df_store.dropna(subset=["部门"])
+    df_sales = df_sales.dropna(subset=["门店代码"])
+    for c in ["任务额","计提"]:
+        df_store[c] = pd.to_numeric(df_store, errors="coerce").fillna(0)
+    for c in ["成交折扣","实际计提绩效","零售总价","成交金额"]:
+        df_sales[c] = pd.to_numeric(df_sales[c], errors="coerce").fillna(0)
+
+    # 自动填充产品类型
+    df_sales["产品类型"] = df_sales.apply(lambda r: get_product(r["品牌"]) if str(r["产品类型"]).strip() not in ["助听器","呼吸机"] else r["产品类型"], axis=1)
+    # 逐行计算Y、Z
+    z_list = []
+    y_list = []
+    for _, row in df_sales.iterrows():
+        z,y = calc_z_row(row)
+        z_list.append(z)
+        y_list.append(y)
+    df_sales["Y计提基数"] = y_list
+    df_sales["最终提成基数Z"] = z_list
+
+    # 门店汇总Z：助听器/呼吸机
+    store_group = df_sales.groupby(["门店代码","产品类型"])["最终提成基数Z"].sum().unstack(fill_value=0)
+    for t in ["助听器","呼吸机"]:
+        if t not in store_group.columns:
+            store_group[t] = 0
+    store_group = store_group.round(2)
+
+    # 门店完成率字典
+    df_store["绩效完成率"] = df_store["计提"] / df_store["任务额"].replace(0, np.nan)
+    df_store["绩效完成率"] = df_store["绩效完成率"].fillna(0)
+    store_info = df_store.set_index("部门")[["门店类别","绩效完成率"]].to_dict("index")
+
+    # 逐人计算
+    res_rows = []
+    staff_remark_col = find_col(df_staff, ["备注","说明","人员备注"])
     if not staff_remark_col:
         df_staff["备注"] = ""
         staff_remark_col = "备注"
 
-    # 4. 必填列校验
-    required_store = ["部门", "门店类别", "任务额", "计提绩效"]
-    required_sales = ["门店代码", "品牌", "成交折扣", "实际计提绩效", "零售总价", "成交金额", "备注"]
-    required_staff = ["姓名", "部门名称", "部门代码", "职位", "是否有提成资格", "绩效设定", "行为绩效", "库存机奖励", "异常补差", "转介绍"]
-
-    missing_store = [c for c in required_store if c not in df_store.columns]
-    missing_sales = [c for c in required_sales if c not in df_sales.columns]
-    missing_staff = [c for c in required_staff if c not in df_staff.columns]
-
-    if missing_store:
-        raise ValueError(f"门店完成情况表缺少必填列：{', '.join(missing_store)}。当前列：{', '.join(df_store.columns)}")
-    if missing_sales:
-        raise ValueError(f"销售明细表缺少必填列：{', '.join(missing_sales)}。当前列：{', '.join(df_sales.columns)}")
-    if missing_staff:
-        raise ValueError(f"人员配置表缺少必填列：{', '.join(missing_staff)}。当前列：{', '.join(df_staff.columns)}")
-
-    # 5. 数据清洗
-    df_store = df_store.dropna(subset=["部门"])
-    df_sales = df_sales.dropna(subset=["门店代码"])
-    for col in ["任务额", "计提绩效"]:
-        df_store[col] = pd.to_numeric(df_store[col], errors="coerce").fillna(0)
-    for col in ["成交折扣", "实际计提绩效", "零售总价", "成交金额"]:
-        df_sales[col] = pd.to_numeric(df_sales[col], errors="coerce").fillna(0)
-
-    # 6. 品牌自动匹配产品类型（X列填充）
-    def match_product_type(brand_name):
-        brand_name = str(brand_name).strip()
-        for brand, ptype in BRAND_PRODUCT_MAP.items():
-            if brand in brand_name:
-                return ptype
-        return "助听器"
-
-    df_sales["产品类型"] = df_sales.apply(
-        lambda x: str(x["产品类型"]).strip() if str(x["产品类型"]).strip() in ["助听器", "呼吸机"] else match_product_type(x["品牌"]),
-        axis=1
-    )
-
-    # 7. 计算单订单最终提成基数
-    df_sales["最终提成基数"] = df_sales.apply(calc_final_base, axis=1)
-
-    # 8. 按门店+产品类型汇总基数，保留2位小数
-    store_summary = df_sales.groupby(["门店代码", "产品类型"])["最终提成基数"].sum().unstack(fill_value=0)
-    for col in ["助听器", "呼吸机"]:
-        if col not in store_summary.columns:
-            store_summary[col] = 0.0
-    store_summary = store_summary.round(2)
-
-    # 9. 计算门店绩效完成率
-    df_store["绩效完成率"] = df_store["计提绩效"] / df_store["任务额"].replace(0, np.nan)
-    df_store["绩效完成率"] = df_store["绩效完成率"].fillna(0)
-    store_info_dict = df_store.set_index("部门")[["门店类别", "绩效完成率"]].to_dict("index")
-
-    # 10. 逐人计算薪酬
-    result_rows = []
-    for _, staff in df_staff.iterrows():
-        store_code = str(staff["部门代码"]).strip()
-        position = str(staff["职位"]).strip()
-        has_commission = str(staff["是否有提成资格"]).strip() == "是"
-        staff_remark = str(staff.get(staff_remark_col, "")).strip()
-
-        # 人员特殊备注：全月缺勤/病假等，全部清零
-        is_exempt = any(kw in staff_remark for kw in STAFF_NO_COMMISSION_KEYWORDS)
-        if is_exempt:
-            result_rows.append({
-                "姓名": staff["姓名"],
-                "部门名称": staff["部门名称"],
-                "绩效小计": 0.0,
-                "提成总计": 0.0,
-                "调差总计": 0.0,
-                "备注": staff_remark
+    for _, s in df_staff.iterrows():
+        remark = str(s.get(staff_remark_col,"")).strip()
+        is_clear = any(k in remark for k in STAFF_CLEAR_KEY)
+        if is_clear:
+            res_rows.append({
+                "姓名":s["姓名"],
+                "部门名称":s["部门名称"],
+                "绩效小计":0.0,
+                "提成总计":0.0,
+                "调差总计":0.0,
+                "备注":remark
             })
             continue
-
+        dept_code = str(s["部门代码"]).strip()
+        pos = str(s["职位"]).strip()
+        has_comm = str(s["是否有提成资格"]).strip() == "是"
         # 门店基数
-        if store_code in store_summary.index:
-            ha_base = float(store_summary.loc[store_code, "助听器"])
-            ven_base = float(store_summary.loc[store_code, "呼吸机"])
-        else:
-            ha_base = 0.0
-            ven_base = 0.0
-
-        # 扣除门店LS费用（所有备用金Sheet的合计值）
-        store_ls = float(ls_summary.get(store_code, 0.0))
-        ha_base_after_ls = round(max(0.0, ha_base - store_ls), 2)
-
-        store_info = store_info_dict.get(store_code, {"门店类别": "C+类", "绩效完成率": 0.0})
-
-        # 提成计算，每步保留2位小数
-        if has_commission and position in HEARING_AID_RATE:
-            ha_commission = round(ha_base_after_ls * HEARING_AID_RATE[position], 2)
-            ven_commission = round(ven_base * VENTILATOR_RATE[position], 2)
-        else:
-            ha_commission = 0.0
-            ven_commission = 0.0
-
-        total_commission = round(ha_commission + ven_commission, 2)
-
-        # 调差总计
-        adjust_total = round(
-            float(staff.get("库存机奖励", 0)) +
-            float(staff.get("异常补差", 0)) +
-            float(staff.get("转介绍", 0)), 2
-        )
-
-        # 绩效小计（严格对齐Z列逻辑）
-        perf_total = calc_person_performance(staff, store_info)
-
-        result_rows.append({
-            "姓名": staff["姓名"],
-            "部门名称": staff["部门名称"],
-            "绩效小计": perf_total,
-            "提成总计": total_commission,
-            "调差总计": adjust_total,
-            "备注": staff_remark
+        ha_total = store_group.loc[dept_code, "助听器"] if dept_code in store_group.index else 0.0
+        ven_total = store_group.loc[dept_code, "呼吸机"] if dept_code in store_group.index else 0.0
+        # 扣除LS
+        dept_ls = ls_dict.get(dept_code, 0.0)
+        ha_after_ls = round(max(0, ha_total - dept_ls), 2)
+        # 提成计算
+        ha_comm = 0.0
+        ven_comm = 0.0
+        if has_comm and pos in HEARING_AID_RATE:
+            ha_comm = round(ha_after_ls * HEARING_AID_RATE[pos], 2)
+            ven_comm = round(ven_total * VENTILATOR_RATE[pos], 2)
+        base_total = round(ha_comm + ven_comm, 2)
+        adjust = round(float(s["库存机奖励"]) + float(s["异常补差"]) + float(s["转介绍"]) + float(s["个人提成调整"]), 2)
+        total_comm = round(base_total + adjust, 2)
+        # 绩效
+        perf_sum = calc_staff_perf(s, store_info.get(dept_code, {"门店类别":"C+类","绩效完成率":0}))
+        res_rows.append({
+            "姓名":s["姓名"],
+            "部门名称":s["部门名称"],
+            "绩效小计":perf_sum,
+            "提成总计":total_comm,
+            "调差总计":adjust,
+            "备注":remark
         })
+    df_result = pd.DataFrame(res_rows)
+    return df_result, store_group.reset_index(), df_sales
 
-    df_result = pd.DataFrame(result_rows)
-    return df_result, store_summary.reset_index(), df_sales
-
-
-# ===================== 生成配置模板 =====================
 def generate_config_template():
-    template = pd.DataFrame(columns=[
-        "姓名", "工号", "部门名称", "部门代码", "职位", "备注",
-        "是否有提成资格", "绩效设定", "行为绩效",
-        "库存机奖励", "异常补差", "转介绍"
-    ])
-    template.loc[0] = ["示例-店长", "C0001", "北京六壹广场店", "B-BJ04", "店长", "", "是", 1600, 100, 0, 0, 0]
-    template.loc[1] = ["示例-店员", "C0002", "北京六壹广场店", "B-BJ04", "店员", "", "是", 1000, 100, 0, 0, 0]
-    template.loc[2] = ["示例-病假", "C0003", "北京劲松店", "B-BJ19", "店长", "5月全月病假，无提成", "是", 1400, 0, 0, 0, 0]
-    return template
+    cols = [
+        "姓名","工号","部门名称","部门代码","职位","备注","是否有提成资格",
+        "绩效设定","行为绩效","库存机奖励","异常补差","转介绍","个人提成调整"
+    ]
+    temp = pd.DataFrame(columns=cols)
+    temp.loc[0] = ["示例店长","C001","北京六壹广场店","B-BJ04","店长","","是",1600,100,0,0,0,0]
+    temp.loc[1] = ["示例店员","C002","北京六壹广场店","B-BJ04","店员","","是",100,100,0,0,0,0]
+    temp.loc[2] = ["病假店长","C003","北京劲松店","B-BJ19","店长","5月全月病假，无提成","是",1400,0,0,0,0,0]
+    return temp
