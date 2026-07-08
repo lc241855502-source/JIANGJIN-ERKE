@@ -162,7 +162,7 @@ def run_calculation(business_file, config_file, store_sheet="26.05完成情况",
     if "产品类型" not in df_sales.columns:
         df_sales["产品类型"] = ""
 
-    # 必填校验【修复错误行】
+    # 必填校验
     req_store = ["部门","门店类别","任务额","计提"]
     req_sales = ["门店代码","品牌","成交折扣","实际计提绩效","零售总价","成交金额","备注"]
     req_staff = ["姓名","部门名称","部门代码","职位","是否有提成资格","绩效设定","行为绩效","库存机奖励","异常补差","转介绍","个人提成调整"]
@@ -178,13 +178,14 @@ def run_calculation(business_file, config_file, store_sheet="26.05完成情况",
     if miss_staff:
         raise ValueError(f"人员配置表缺失必填列：{miss_staff}")
 
-    # 清洗数值
+    # 清洗数值 修复.fill → fillna
     df_store = df_store.dropna(subset=["部门"])
-    df_sales = df_sales.dropna(subset=["门店代码"])
     for c in ["任务额","计提"]:
-        df_store[c] = pd.to_numeric(df_store[c], errors="coerce").fill(0)
+        df_store[c] = pd.to_numeric(df_store[c], errors="coerce").fillna(0)
+
+    df_sales = df_sales.dropna(subset=["门店代码"])
     for c in ["成交折扣","实际计提绩效","零售总价","成交金额"]:
-        df_sales[c] = pd.to_numeric(df_sales[c], errors="coerce").fill(0)
+        df_sales[c] = pd.to_numeric(df_sales[c], errors="coerce").fillna(0)
 
     # 自动填充产品类型
     df_sales["产品类型"] = df_sales.apply(lambda r: get_product(r["品牌"]) if str(r["产品类型"]).strip() not in ["助听器","呼吸机"] else r["产品类型"], axis=1)
@@ -219,7 +220,7 @@ def run_calculation(business_file, config_file, store_sheet="26.05完成情况",
 
     for _, s in df_staff.iterrows():
         remark = str(s.get(staff_remark_col,"")).strip()
-        is_clear = any(k in STAFF_CLEAR_KEY for k in remark)
+        is_clear = any(k in remark for k in STAFF_CLEAR_KEY)
         if is_clear:
             res_rows.append({
                 "姓名":s["姓名"],
