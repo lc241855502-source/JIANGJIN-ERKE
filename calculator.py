@@ -138,9 +138,9 @@ def run_calculation(business_file, config_file,
     try:
         df_ls = smart_read_excel(
             business_file, ls_sheet,
-            required_keywords=["门店代码", "费用类型", "金额", "LS"]
+            required_keywords=["门店代码", "费用类型", "金额"]
         )
-        # 筛选LS类型费用，按门店汇总
+        # 筛选LS类型费用，按门店汇总（整行包含LS关键字即判定）
         ls_mask = df_ls.apply(lambda x: "LS" in str(x.to_list()), axis=1)
         ls_summary = df_ls[ls_mask].groupby("门店代码")["金额"].sum().to_dict()
     except Exception:
@@ -161,7 +161,11 @@ def run_calculation(business_file, config_file,
     df_store = df_store.rename(columns={k: v for k, v in store_col_map.items() if k in df_store.columns})
     df_sales = df_sales.rename(columns={k: v for k, v in sales_col_map.items() if k in df_sales.columns})
 
-    # 4. 必填列校验
+    # 兼容：产品类型列不存在则自动创建空列，后续靠品牌匹配填充
+    if "产品类型" not in df_sales.columns:
+        df_sales["产品类型"] = ""
+
+    # 4. 必填列校验（产品类型改为可选，完全靠品牌生成）
     required_store = ["部门", "门店类别", "任务额", "计提绩效"]
     required_sales = ["门店代码", "品牌", "成交折扣", "实际计提绩效", "零售总价", "成交金额", "备注"]
     required_staff = ["姓名", "部门名称", "部门代码", "职位", "是否有提成资格", "绩效设定", "行为绩效", "库存机奖励", "异常补差", "转介绍"]
@@ -206,7 +210,6 @@ def run_calculation(business_file, config_file,
     for col in ["助听器", "呼吸机"]:
         if col not in store_summary.columns:
             store_summary[col] = 0.0
-    # 汇总值保留2位小数
     store_summary = store_summary.round(2)
 
     # 9. 计算门店绩效完成率
