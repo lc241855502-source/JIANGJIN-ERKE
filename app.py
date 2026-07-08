@@ -65,7 +65,7 @@ if st.button("开始计算", type="primary", disabled=not can_run):
                 # 备注非空的姓名标蓝
                 wb = writer.book
                 ws = wb["人员提成结果"]
-                blue_font = Font(color="#0000FF", bold=True)
+                blue_font = Font(color="FF0000FF", bold=True)
                 headers = [cell.value for cell in ws[1]]
                 remark_idx = None
                 for idx, h in enumerate(headers):
