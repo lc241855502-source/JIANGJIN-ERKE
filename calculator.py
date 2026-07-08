@@ -187,8 +187,8 @@ def run_calculation(business_file, config_file, store_sheet="26.05完成情况",
     for c in ["成交折扣","实际计提绩效","零售总价","成交金额"]:
         df_sales[c] = pd.to_numeric(df_sales[c], errors="coerce").fillna(0)
 
-    # 【修复】函数名匹配 get_product_type
-    df_sales["产品类型"] = df_sales.apply(lambda r: get_product_type(r["brand"]) if str(r["产品类型"]).strip() not in ["助听器","呼吸机"] else r["产品类型"], axis=1)
+    # 修复：r["brand"] → r["品牌"]
+    df_sales["产品类型"] = df_sales.apply(lambda r: get_product_type(r["品牌"]) if str(r["产品类型"]).strip() not in ["助听器","呼吸机"] else r["产品类型"], axis=1)
     # 逐行计算Y、Z
     z_list = []
     y_list = []
