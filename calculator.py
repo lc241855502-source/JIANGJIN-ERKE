@@ -39,7 +39,7 @@ PERFORMANCE_WEIGHT = {
 # 订单无提成关键词
 NO_COMMISSION_KEYWORDS = ["无提成", "提成0%", "#N/A", "提成100元/台", "提成88元/台", "提成100元每台", "提成88元每台"]
 # 人员无提成/清零关键词
-STAFF_NO_COMMISSION_KEYWORDS = ["无提成", "病假", "产假", "离职", "缺勤整月", "无绩效", "全月缺勤"]
+STAFF_NO_COMMISSION_KEYWORDS = ["无提成", "病假", "产假", "离职", "缺勤整月", "无绩效", "全月缺勤", "整月病假"]
 
 
 # ===================== 工具函数：智能读取带标题行的Sheet =====================
@@ -56,6 +56,16 @@ def smart_read_excel(file, sheet_name, required_keywords):
     df.columns = [str(col).strip() for col in df.columns]
     df = df.dropna(axis=1, how="all")
     return df
+
+
+# ===================== 工具函数：模糊匹配列名 =====================
+def find_col(df, keywords):
+    """在DataFrame列中查找包含任一关键词的列名，返回第一个匹配的列名"""
+    for col in df.columns:
+        for kw in keywords:
+            if kw in col:
+                return col
+    return None
 
 
 # ===================== 单订单最终提成基数计算 =====================
@@ -91,17 +101,23 @@ def calc_final_base(row):
     return 0.0
 
 
-# ===================== 单人绩效计算（严格对齐W/X/Y/Z分步逻辑） =====================
+# ===================== 单人绩效计算（严格对齐人工计算逻辑） =====================
 def calc_person_performance(staff_row, store_info):
     store_level = store_info.get("门店类别", "C+类")
     completion_rate = store_info.get("绩效完成率", 0.0)
     position = str(staff_row["职位"]).strip()
     perf_base = float(staff_row["绩效设定"])  # W列：绩效基数
-    behavior_score = float(staff_row["行为绩效"]) / 100
+    behavior_raw = float(staff_row["行为绩效"])
 
-    # 1. 计算业绩系数
+    # 自动识别行为绩效格式：>1 按百分制，≤1 按百分比小数
+    if behavior_raw > 1:
+        behavior_score = behavior_raw / 100
+    else:
+        behavior_score = behavior_raw
+
+    # 1. 计算业绩系数：≥70%生效，封顶100%，保留3位小数（百分比1位精度）
     if completion_rate >= 0.7:
-        perf_ratio = round(min(completion_rate, 1.0), 3)  # 百分比保留1位小数
+        perf_ratio = round(min(completion_rate, 1.0), 3)
     else:
         perf_ratio = 0.0
 
@@ -109,7 +125,7 @@ def calc_person_performance(staff_row, store_info):
     level_config = PERFORMANCE_WEIGHT.get(store_level, PERFORMANCE_WEIGHT["C+类"])
     perf_weight, behavior_weight = level_config.get(position, (0.4, 0.6))
 
-    # 3. 分步计算X、Y、Z，每步四舍五入
+    # 3. 分步计算X、Y、Z，每步四舍五入，完全对齐Excel
     x_perf = round(perf_base * perf_weight * perf_ratio, 2)  # X列：业绩绩效
     y_behavior = round(perf_base * behavior_weight * behavior_score, 2)  # Y列：行为绩效
     z_total = round(x_perf + y_behavior, 2)  # Z列：绩效小计
@@ -133,7 +149,7 @@ def run_calculation(business_file, config_file,
     df_staff = pd.read_excel(config_file)
     df_staff.columns = [str(col).strip() for col in df_staff.columns]
 
-    # 2. 自动识别备用金Sheet（模糊匹配包含“备用金”的Sheet名）
+    # 2. 自动识别备用金Sheet，精准读取LS费用
     ls_summary = {}
     try:
         xls = pd.ExcelFile(business_file)
@@ -147,13 +163,17 @@ def run_calculation(business_file, config_file,
         if ls_sheet_name:
             df_ls = smart_read_excel(
                 business_file, ls_sheet_name,
-                required_keywords=["门店代码", "费用类型", "金额"]
+                required_keywords=["门店", "费用类型", "金额"]
             )
-            # 筛选LS类型费用，按门店汇总
-            ls_mask = df_ls.apply(lambda x: "LS" in str(x.to_list()), axis=1)
-            ls_summary = df_ls[ls_mask].groupby("门店代码")["金额"].sum().to_dict()
+            # 精准匹配：只在费用类型列中查找包含LS的项
+            type_col = find_col(df_ls, ["费用类型", "项目", "类型", "费用项目"])
+            store_col = find_col(df_ls, ["门店代码", "门店", "部门代码", "部门"])
+            amount_col = find_col(df_ls, ["金额", "费用金额", "发生额"])
+
+            if type_col and store_col and amount_col:
+                ls_mask = df_ls[type_col].astype(str).str.contains("LS", na=False)
+                ls_summary = df_ls[ls_mask].groupby(store_col)[amount_col].sum().to_dict()
     except Exception:
-        # 读取失败或无备用金Sheet时，默认LS为0，不中断计算
         pass
 
     # 3. 列名兼容映射
@@ -174,7 +194,13 @@ def run_calculation(business_file, config_file,
     if "产品类型" not in df_sales.columns:
         df_sales["产品类型"] = ""
 
-    # 4. 必填列校验（产品类型改为可选，完全靠品牌生成）
+    # 兼容：人员备注列模糊匹配
+    staff_remark_col = find_col(df_staff, ["备注", "说明", "备注说明", "人员备注"])
+    if not staff_remark_col:
+        df_staff["备注"] = ""
+        staff_remark_col = "备注"
+
+    # 4. 必填列校验
     required_store = ["部门", "门店类别", "任务额", "计提绩效"]
     required_sales = ["门店代码", "品牌", "成交折扣", "实际计提绩效", "零售总价", "成交金额", "备注"]
     required_staff = ["姓名", "部门名称", "部门代码", "职位", "是否有提成资格", "绩效设定", "行为绩效", "库存机奖励", "异常补差", "转介绍"]
@@ -214,7 +240,7 @@ def run_calculation(business_file, config_file,
     # 7. 计算单订单最终提成基数
     df_sales["最终提成基数"] = df_sales.apply(calc_final_base, axis=1)
 
-    # 8. 按门店+产品类型汇总基数
+    # 8. 按门店+产品类型汇总基数，保留2位小数
     store_summary = df_sales.groupby(["门店代码", "产品类型"])["最终提成基数"].sum().unstack(fill_value=0)
     for col in ["助听器", "呼吸机"]:
         if col not in store_summary.columns:
@@ -232,7 +258,7 @@ def run_calculation(business_file, config_file,
         store_code = str(staff["部门代码"]).strip()
         position = str(staff["职位"]).strip()
         has_commission = str(staff["是否有提成资格"]).strip() == "是"
-        staff_remark = str(staff.get("备注", "")).strip()
+        staff_remark = str(staff.get(staff_remark_col, "")).strip()
 
         # 人员特殊备注：全月缺勤/病假等，全部清零
         is_exempt = any(kw in staff_remark for kw in STAFF_NO_COMMISSION_KEYWORDS)
@@ -261,7 +287,7 @@ def run_calculation(business_file, config_file,
 
         store_info = store_info_dict.get(store_code, {"门店类别": "C+类", "绩效完成率": 0.0})
 
-        # 提成计算
+        # 提成计算，每步保留2位小数
         if has_commission and position in HEARING_AID_RATE:
             ha_commission = round(ha_base_after_ls * HEARING_AID_RATE[position], 2)
             ven_commission = round(ven_base * VENTILATOR_RATE[position], 2)
