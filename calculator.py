@@ -58,17 +58,19 @@ def get_product_type(brand):
     return "助听器"
 
 def calc_z_row(row):
+    # 全部变量提前初始化，杜绝未定义
     ptype = str(row.get("产品类型","")).strip()
     brand = str(row.get("品牌","")).strip()
-    discount = float(row.get("成交折扣",0)) if pd.notna(row.get("成交折扣")) else 0
-    u = float(row.get("实际计提绩效",0)) if pd.notna(row.get("实际计提绩效")) else 0
-    retail_total = float(row.get("零售总价",0)) if pd.notna(row.get("零售总价")) else 0
-    deal_amt = float(row.get("成交金额",0)) if pd.notna(row.get("成交金额")) else 0
-    ls_ratio = float(row.get("LS分摊比例",0)) if pd.notna(row.get("LS分摊比例")) else 0
+    discount = float(row.get("成交折扣",0)) if pd.notna(row.get("成交折扣")) else 0.0
+    u = float(row.get("实际计提绩效",0)) if pd.notna(row.get("实际计提绩效")) else 0.0
+    retail_total = float(row.get("零售总价",0)) if pd.notna(row.get("零售总价")) else 0.0
+    deal_amt = float(row.get("成交金额",0)) if pd.notna(row.get("成交金额")) else 0.0
+    ls_ratio = float(row.get("LS分摊比例",0)) if pd.notna(row.get("LS分摊比例")) else 0.0
     remark = str(row.get("备注","")).strip()
 
     y = 0.0
     z = 0.0
+
     if ptype == "呼吸机":
         if discount < 0.7:
             y = 0.0
@@ -81,7 +83,7 @@ def calc_z_row(row):
             y = round(u * 1.2, 2)
         elif "即墨医院订单" in remark:
             if deal_amt == 0:
-                ratio = 0
+                ratio = 0.0
             else:
                 ratio = (retail_total * 0.95) / deal_amt
             if ratio >= 0.5:
@@ -92,7 +94,7 @@ def calc_z_row(row):
                 y = 0.0
         elif "武汉中南订单" in remark or "武汉人民订单" in remark:
             if deal_amt == 0:
-                ratio = 0
+                ratio = 0.0
             else:
                 ratio = retail_total / deal_amt
             if ratio >= 0.5:
@@ -114,7 +116,7 @@ def calc_z_row(row):
 
 def calc_staff_perf(staff_data, store_data):
     completion = store_data.get("绩效完成率",0.0)
-    level = store_data.get("C+类")
+    level = store_data.get("门店类别","C+类")
     pos = str(staff_data["职位"]).strip()
     base_perf = float(staff_data["绩效设定"])
     beh_raw = float(staff_data["行为绩效"])
@@ -131,8 +133,8 @@ def calc_staff_perf(staff_data, store_data):
 
     wgt_perf, wgt_beh = PERFORMANCE_WEIGHT.get(level, {"店长":(0.6,0.4),"店员":(0.4,0.6)}).get(pos,(0.4,0.6))
     x = round(base_perf * wgt_perf * perf_rate, 2)
-    y = round(base_perf * wgt_beh * beh_score, 2)
-    z_total = round(x + y, 2)
+    y_perf = round(base_perf * wgt_beh * beh_score, 2)
+    z_total = round(x + y_perf, 2)
     return z_total
 
 def run_calculation(business_file, config_file, store_sheet="26.05完成情况", sales_sheet="26.05销售明细"):
@@ -156,7 +158,7 @@ def run_calculation(business_file, config_file, store_sheet="26.05完成情况",
                 df_ls[col_amt] = pd.to_numeric(df_ls[col_amt], errors="coerce").fillna(0)
                 group = df_ls.groupby(col_store)[col_amt].sum().to_dict()
                 for k,v in group.items():
-                    ls_dict[k] = ls_dict.get(k,0) + v
+                    ls_dict[k] = ls_dict.get(k,0.0) + float(v)
     except Exception:
         pass
 
@@ -184,7 +186,7 @@ def run_calculation(business_file, config_file, store_sheet="26.05完成情况",
     if miss_staff:
         raise ValueError(f"人员配置表缺失必填列：{miss_staff}")
 
-    # 清洗数值
+    # 清洗数值 全部fillna(0)
     df_store = df_store.dropna(subset=["部门"])
     for c in ["任务额","计提"]:
         df_store[c] = pd.to_numeric(df_store[c], errors="coerce").fillna(0)
@@ -195,7 +197,7 @@ def run_calculation(business_file, config_file, store_sheet="26.05完成情况",
 
     # 填充产品类型
     df_sales["产品类型"] = df_sales.apply(lambda r: get_product_type(r["品牌"]) if str(r["产品类型"]).strip() not in ["助听器","呼吸机"] else r["产品类型"], axis=1)
-    # 逐行计算Y Z
+    # 逐行计算Y、Z
     z_list = []
     y_list = []
     for _, row in df_sales.iterrows():
@@ -205,16 +207,16 @@ def run_calculation(business_file, config_file, store_sheet="26.05完成情况",
     df_sales["Y计提基数"] = y_list
     df_sales["最终提成基数Z"] = z_list
 
-    # 门店汇总
-    store_group = df_sales.groupby(["门店代码","产品类型"])["最终提成基数Z"].sum().unstack(fill_value=0)
+    # 门店汇总Z：助听器/呼吸机
+    store_group = df_sales.groupby(["门店代码","产品类型"])["最终提成基数Z"].sum().unstack(fill_value=0.0)
     for t in ["助听器","呼吸机"]:
         if t not in store_group.columns:
             store_group[t] = 0.0
     store_group = store_group.round(2)
 
-    # 完成率
+    # 门店完成率字典
     df_store["绩效完成率"] = df_store["计提"] / df_store["任务额"].replace(0, np.nan)
-    df_store["绩效完成率"] = df_store["绩效完成率"].fillna(0)
+    df_store["绩效完成率"] = df_store["绩效完成率"].fillna(0.0)
     store_info = df_store.set_index("部门")[["门店类别","绩效完成率"]].to_dict("index")
 
     # 逐人计算
@@ -240,24 +242,25 @@ def run_calculation(business_file, config_file, store_sheet="26.05完成情况",
         dept_code = str(s["部门代码"]).strip()
         pos = str(s["职位"]).strip()
         has_comm = str(s["是否有提成资格"]).strip() == "是"
-        # 门店基数
-        ha_total = store_group.loc[dept_code, "助听器"] if dept_code in store_group.index else 0.0
-        ven_total = store_group.loc[dept_code, "呼吸机"] if dept_code in store_group.index else 0.0
-        # LS扣除
-        dept_ls = ls_dict.get(dept_code, 0.0)
+        # 门店基数 兜底0.0
+        ha_total = float(store_group.loc[dept_code, "助听器"]) if dept_code in store_group.index else 0.0
+        ven_total = float(store_group.loc[dept_code, "呼吸机"]) if dept_code in store_group.index else 0.0
+        # 扣除LS
+        dept_ls = float(ls_dict.get(dept_code, 0.0))
         ha_after_ls = round(max(0.0, ha_total - dept_ls), 2)
-        # 提成计算 全部强制浮点数防止None
+        # 提成计算 全部强制float兜底0
         ha_comm = 0.0
         ven_comm = 0.0
         if has_comm and pos in HEARING_AID_RATE:
             ha_comm = round(float(ha_after_ls) * HEARING_AID_RATE[pos], 2)
             ven_comm = round(float(ven_total) * VENTILATOR_RATE[pos], 2)
         base_total = round(ha_comm + ven_comm, 2)
+        # 调差全部兜底0.0
         adjust = round(
-            float(s.get("库存机奖励", 0)) +
-            float(s.get("异常补差", 0)) +
-            float(s.get("转介绍", 0)) +
-            float(s.get("个人提成调整", 0)), 2
+            float(s.get("库存机奖励", 0.0)) +
+            float(s.get("异常补差", 0.0)) +
+            float(s.get("转介绍", 0.0)) +
+            float(s.get("个人提成调整", 0.0)), 2
         )
         total_comm = round(base_total + adjust, 2)
         # 绩效
