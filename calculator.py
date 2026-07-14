@@ -25,8 +25,8 @@ PERFORMANCE_WEIGHT = {
     "D类": {"店长": (0.7, 0.3), "店员": (0.3, 0.7)}
 }
 
-# 无提成订单关键词
-NO_COMMISSION_ORDER = ["无提成", "提成0%", "#N/A", "提成100元/台", "提成88元/台", "提成100元每台", "提成88元每台"]
+# 无提成订单关键词（优先级最高）
+NO_COMMISSION_ORDER = ["无提成", "提成0%", "#N/A", "提成100元/台", "提成88元/台", "提成100元每台", "提成88元每台", "库存活动单台奖励"]
 # 人员清零关键词
 STAFF_CLEAR_KEY = ["无提成", "病假", "产假", "离职", "缺勤整月", "无绩效", "全月缺勤", "整月病假"]
 
@@ -66,65 +66,72 @@ def get_product_type(brand):
     return "助听器"
 
 
-def calc_z_row(row):
-    """订单计提基数兜底计算：优先用原表已有列，此函数仅作备用"""
-    ptype = str(row.get("产品类型", "")).strip()
+def calc_commission_base(row):
+    """按备注规则计算订单计提提成基数：包含所有医院/转店/AB分成逻辑"""
+    # 基础字段读取+空值兜底
+    remark = str(row.get("备注", "")).strip() if pd.notna(row.get("备注")) else ""
+    u = float(row.get("应计提绩效", 0.0)) if pd.notna(row.get("应计提绩效")) else 0.0
     discount = float(row.get("成交折扣", 0.0)) if pd.notna(row.get("成交折扣")) else 0.0
-    u = float(row.get("实际计提绩效", 0.0)) if pd.notna(row.get("实际计提绩效")) else 0.0
     retail_total = float(row.get("零售总价", 0.0)) if pd.notna(row.get("零售总价")) else 0.0
     deal_amt = float(row.get("成交金额", 0.0)) if pd.notna(row.get("成交金额")) else 0.0
-    ls_val = 0.0
-    if pd.notna(row.get("LS分摊比例")):
-        ls_val = float(row.get("LS分摊比例", 0.0))
-    elif pd.notna(row.get("LS")):
-        ls_val = float(row.get("LS", 0.0))
-    remark = str(row.get("备注", "")).strip() if pd.notna(row.get("备注")) else ""
+    hospital_settle = float(row.get("医院结算金额", 0.0)) if pd.notna(row.get("医院结算金额")) else 0.0
+    hospital_deduct_ratio = float(row.get("医院扣款比例", 0.0)) if pd.notna(row.get("医院扣款比例")) else 0.0
+    allocate_amt = float(row.get("分配金额", 0.0)) if pd.notna(row.get("分配金额")) else 0.0
 
-    y = 0.0
-    z = 0.0
+    base_raw = 0.0
 
-    if ptype == "呼吸机":
+    # 优先级0：无提成订单直接归零
+    if any(k in remark for k in NO_COMMISSION_ORDER):
+        base_raw = 0.0
+
+    # 优先级1：呼吸机订单
+    elif "呼吸机" in remark:
         if discount < 0.7:
-            y = 0.0
+            base_raw = 0.0
         else:
-            y = round(deal_amt - retail_total * 0.7, 2)
-    else:
-        if any(k in remark for k in NO_COMMISSION_ORDER):
-            y = 0.0
-        elif "斯达克全品类1.2倍提成" in remark:
-            y = round(u * 1.2, 2)
-        elif "即墨医院订单" in remark:
-            if deal_amt <= 0:
-                ratio = 0.0
-            else:
-                ratio = (retail_total * 0.95) / deal_amt
-            if ratio >= 0.5:
-                y = round(retail_total, 2)
-            elif ratio >= 0.4:
-                y = round(retail_total * 0.5, 2)
-            else:
-                y = 0.0
-        elif "武汉中南订单" in remark or "武汉人民订单" in remark:
-            if deal_amt <= 0:
-                ratio = 0.0
-            else:
-                ratio = retail_total / deal_amt
-            if ratio >= 0.5:
-                y = round(retail_total, 2)
-            elif ratio >= 0.4:
-                y = round(retail_total * 0.5, 2)
-            else:
-                y = 0.0
-        elif "转门店" in remark:
-            y = round(u * (1 - ls_val), 2)
-        else:
-            y = round(u, 2)
+            base_raw = round(deal_amt - retail_total * 0.7, 2)
 
-    if 0.4 < discount < 0.5:
-        z = round(y / 2, 2)
+    # 优先级2：斯达克全品类1.2倍提成
+    elif "斯达克全品类1.2倍提成" in remark:
+        base_raw = round(u * 1.2, 2)
+
+    # 优先级3：即墨医院订单（95%回款系数）
+    elif "即墨医院订单" in remark:
+        if retail_total <= 0:
+            ratio = 0.0
+        else:
+            ratio = (hospital_settle * 0.95) / retail_total
+        if ratio >= 0.5:
+            base_raw = round(hospital_settle, 2)
+        elif ratio >= 0.4:
+            base_raw = round(hospital_settle * 0.5, 2)
+        else:
+            base_raw = 0.0
+
+    # 优先级4：潍坊/武汉中南/武汉人民医院订单（全额回款系数）
+    elif any(k in remark for k in ["潍坊医院订单", "武汉中南订单", "武汉人民订单"]):
+        if retail_total <= 0:
+            ratio = 0.0
+        else:
+            ratio = hospital_settle / retail_total
+        if ratio >= 0.5:
+            base_raw = round(hospital_settle, 2)
+        elif ratio >= 0.4:
+            base_raw = round(hospital_settle * 0.5, 2)
+        else:
+            base_raw = 0.0
+
+    # 优先级5：武汉转门店订单（扣医院比例）
+    elif any(k in remark for k in ["武汉中南转门店", "武汉人民转门店"]):
+        base_raw = round(u * (1 - hospital_deduct_ratio), 2)
+
+    # 优先级6：普通订单/空备注
     else:
-        z = round(y, 2)
-    return z, y
+        base_raw = round(u, 2)
+
+    # 叠加AB店分配金额，得到该门店最终计提基数
+    base_final = round(base_raw + allocate_amt, 2)
+    return base_final, base_raw
 
 
 def calc_staff_perf(staff_data, store_data):
@@ -158,7 +165,7 @@ def run_calculation(business_file, config_file, store_sheet="26.05完成情况",
 
     # 读取三大基础表
     df_store = smart_read_excel(business_file, store_sheet, ["区域", "部门", "店名", "任务额", "计提绩效"])
-    df_sales = smart_read_excel(business_file, sales_sheet, ["门店代码", "品牌", "成交金额", "实际计提绩效"])
+    df_sales = smart_read_excel(business_file, sales_sheet, ["门店代码", "品牌", "成交金额", "应计提绩效"])
     df_staff = pd.read_excel(config_file)
     df_staff.columns = [str(c).strip() for c in df_staff.columns]
 
@@ -181,7 +188,7 @@ def run_calculation(business_file, config_file, store_sheet="26.05完成情况",
     except Exception:
         pass
 
-    # 列名兼容映射
+    # 列名兼容映射（新增医院结算、扣款比例、分配金额）
     store_rename = {}
     for old, new in {"部门": "部门", "部门代码": "部门", "门店代码": "部门",
                      "门店类别": "门店类别", "任务额": "任务额", "计提绩效": "计提"}.items():
@@ -189,22 +196,40 @@ def run_calculation(business_file, config_file, store_sheet="26.05完成情况",
             store_rename[old] = new
     df_store.rename(columns=store_rename, inplace=True)
 
+    sales_rename_map = {
+        "门店代码": "门店代码",
+        "品牌": "品牌",
+        "产品类型": "产品类型",
+        "成交折扣": "成交折扣",
+        "应计提绩效": "应计提绩效",
+        "零售总价": "零售总价",
+        "成交金额": "成交金额",
+        "备注": "备注",
+        "医院结算": "医院结算金额",
+        "医院结算金额": "医院结算金额",
+        "医院回款": "医院结算金额",
+        "医院扣款比例": "医院扣款比例",
+        "LS分摊比例": "医院扣款比例",
+        "LS": "医院扣款比例",
+        "分配金额": "分配金额",
+        "AB店分配金额": "分配金额"
+    }
     sales_rename = {}
-    for old, new in {"门店代码": "门店代码", "品牌": "品牌", "产品类型": "产品类型",
-                     "成交折扣": "成交折扣", "实际计提绩效": "实际计提绩效",
-                     "零售总价": "零售总价", "成交金额": "成交金额",
-                     "备注": "备注", "LS分摊比例": "LS分摊比例", "LS": "LS",
-                     "计提提成基数": "计提提成基数", "分配金额": "分配金额"}.items():
+    for old, new in sales_rename_map.items():
         if old in df_sales.columns:
             sales_rename[old] = new
     df_sales.rename(columns=sales_rename, inplace=True)
 
     if "产品类型" not in df_sales.columns:
         df_sales["产品类型"] = ""
+    # 缺失列自动补0
+    for col in ["应计提绩效", "医院结算金额", "医院扣款比例", "分配金额"]:
+        if col not in df_sales.columns:
+            df_sales[col] = 0.0
 
     # 必填列校验
     req_store = ["部门", "门店类别", "任务额", "计提"]
-    req_sales = ["门店代码", "品牌", "成交折扣", "实际计提绩效", "零售总价", "成交金额", "备注"]
+    req_sales = ["门店代码", "品牌", "成交折扣", "应计提绩效", "零售总价", "成交金额", "备注"]
     req_staff = ["姓名", "部门名称", "部门代码", "职位", "是否有提成资格",
                  "绩效设定", "行为绩效", "库存机奖励", "异常补差", "转介绍", "个人提成调整"]
 
@@ -225,7 +250,7 @@ def run_calculation(business_file, config_file, store_sheet="26.05完成情况",
         df_store[c] = pd.to_numeric(df_store[c], errors="coerce").fillna(0.0)
 
     df_sales = df_sales.dropna(subset=["门店代码"])
-    for c in ["成交折扣", "实际计提绩效", "零售总价", "成交金额"]:
+    for c in ["成交折扣", "应计提绩效", "零售总价", "成交金额", "医院结算金额", "医院扣款比例", "分配金额"]:
         df_sales[c] = pd.to_numeric(df_sales[c], errors="coerce").fillna(0.0)
 
     # 自动填充产品类型
@@ -234,19 +259,14 @@ def run_calculation(business_file, config_file, store_sheet="26.05完成情况",
         axis=1
     )
 
-    # ========== 核心：优先用原表已有的计提提成基数，100%对齐原表逻辑（包含AB分成） ==========
-    if "计提提成基数" in df_sales.columns:
-        df_sales["最终提成基数Z"] = pd.to_numeric(df_sales["计提提成基数"], errors="coerce").fillna(0.0)
-        df_sales["Y计提基数"] = df_sales["最终提成基数Z"]
-    else:
-        # 兜底：自动计算
-        z_list, y_list = [], []
-        for _, row in df_sales.iterrows():
-            z, y = calc_z_row(row)
-            z_list.append(z)
-            y_list.append(y)
-        df_sales["Y计提基数"] = y_list
-        df_sales["最终提成基数Z"] = z_list
+    # 逐行计算计提基数（Y=原始基数，Z=最终基数含AB分配）
+    z_list, y_list = [], []
+    for _, row in df_sales.iterrows():
+        z, y = calc_commission_base(row)
+        z_list.append(z)
+        y_list.append(y)
+    df_sales["Y原始计提基数"] = y_list
+    df_sales["最终提成基数Z"] = z_list
 
     # 门店按产品类型汇总Z
     store_group = df_sales.groupby(["门店代码", "产品类型"])["最终提成基数Z"].sum().unstack(fill_value=0.0)
