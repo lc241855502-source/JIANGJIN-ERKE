@@ -129,10 +129,14 @@ def calc_commission_base(row):
             elif remark in ("武汉中南转门店", "武汉人民转门店"):
                 base_raw = round(u * (1 - hospital_deduct_ratio), 2)
 
-    # 叠加AB店分配金额，得到该门店最终计提基数Z
-    base_final = round(base_raw + allocate_amt, 2)
-    return base_final, base_raw
-
+    # 叠加AB店分配金额，得到Z列基数
+    z_val = round(base_raw + allocate_amt, 2)
+    # AA列规则：成交折扣在0.4~0.5开区间时，基数折半
+    if 0.4 < discount < 0.5:
+        aa_val = round(z_val / 2, 2)
+    else:
+        aa_val = z_val
+    return aa_val, z_val
 
 def calc_staff_perf(staff_data, store_data):
     """绩效计算：完全保留原逻辑，未做任何修改"""
@@ -259,17 +263,18 @@ def run_calculation(business_file, config_file, store_sheet="26.05完成情况",
         axis=1
     )
 
-    # 逐行计算计提基数
-    z_list, y_list = [], []
+     # 逐行计算Z列和AA列计提基数
+    z_list, aa_list = [], []
     for _, row in df_sales.iterrows():
-        z, y = calc_commission_base(row)
+        aa, z = calc_commission_base(row)
+        aa_list.append(aa)
         z_list.append(z)
-        y_list.append(y)
-    df_sales["Y原始计提基数"] = y_list
-    df_sales["最终提成基数Z"] = z_list
+    df_sales["Z列计提基数"] = z_list
+    df_sales["最终提成基数AA"] = aa_list
 
-    # 门店按产品类型汇总Z
-    store_group = df_sales.groupby(["门店代码", "产品类型"])["最终提成基数Z"].sum().unstack(fill_value=0.0)
+
+    # 门店按产品类型汇总AA列（最终参与提成计算）
+    store\_group = df\_sales.groupby(\["门店代码", "产品类型"\])\["最终提成基数AA"\].sum().unstack(fill\_value=0.0)
     for t in ["助听器", "呼吸机"]:
         if t not in store_group.columns:
             store_group[t] = 0.0
